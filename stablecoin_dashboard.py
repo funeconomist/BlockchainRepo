@@ -684,8 +684,15 @@ def main():
             top10_data = fetch_top10_crypto_data(days=90)
             top10_returns = calculate_returns(top10_data)
 
-            # Pivot to get returns by crypto - use pivot_table to handle any remaining duplicates
-            # pivot_table will aggregate duplicates by taking the mean
+            # AGGRESSIVE deduplication - group by date and crypto, take last return value
+            # This ensures absolutely no duplicates before pivoting
+            top10_returns = top10_returns.groupby(['date', 'crypto'], as_index=False).agg({
+                'returns': 'last',
+                'price': 'last'
+            })
+
+            # Pivot to get returns by crypto - use pivot_table for extra safety
+            # pivot_table will aggregate any remaining duplicates by taking the mean
             returns_pivot = top10_returns.pivot_table(
                 index='date',
                 columns='crypto',
