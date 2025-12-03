@@ -1,0 +1,357 @@
+"""
+Institutional Stablecoin Flow Analysis Dashboard
+Tracks USDC/USDT flows between major CEXs and DeFi protocols
+"""
+
+import streamlit as st
+import pandas as pd
+import plotly.graph_objects as go
+import plotly.express as px
+from datetime import datetime, timedelta
+import requests
+from dune_client.client import DuneClient
+from dune_client.query import QueryBase
+import numpy as np
+import os
+
+# Page configuration
+st.set_page_config(
+    page_title="Institutional Stablecoin Flow Analysis",
+    page_icon="💱",
+    layout="wide"
+)
+
+# Initialize APIs
+@st.cache_resource
+def init_dune_client():
+    """Initialize Dune Analytics client"""
+    api_key = os.getenv("DUNE_API_KEY", "")
+    if api_key:
+        return DuneClient(api_key)
+    return None
+
+# Data fetching functions
+@st.cache_data(ttl=3600)
+def fetch_eth_prices(days=30):
+    """Fetch ETH price data from CoinGecko API"""
+    try:
+        url = "https://api.coingecko.com/api/v3/coins/ethereum/market_chart"
+        params = {
+            "vs_currency": "usd",
+            "days": days,
+            "interval": "daily"
+        }
+        response = requests.get(url, params=params, timeout=10)
+        response.raise_for_status()
+
+        data = response.json()
+        prices = data['prices']
+
+        df = pd.DataFrame(prices, columns=['timestamp', 'price'])
+        df['date'] = pd.to_datetime(df['timestamp'], unit='ms').dt.date
+        df = df[['date', 'price']]
+
+        return df
+    except Exception as e:
+        st.warning(f"Could not fetch ETH prices: {e}. Using mock data.")
+        return generate_mock_eth_prices(days)
+
+def generate_mock_eth_prices(days=30):
+    """Generate mock ETH price data for testing"""
+    dates = pd.date_range(end=datetime.now().date(), periods=days, freq='D')
+    base_price = 2000
+    prices = base_price + np.cumsum(np.random.randn(days) * 50)
+
+    df = pd.DataFrame({
+        'date': dates.date,
+        'price': prices
+    })
+    return df
+
+@st.cache_data(ttl=3600)
+def fetch_stablecoin_flows():
+    """
+    Fetch stablecoin transfer data from Dune Analytics
+
+    This requires a Dune query that tracks:
+    - Transfers from known CEX wallets to DeFi protocols
+    - Transfers from DeFi protocols to CEX wallets
+    - Token type (USDC/USDT)
+    - Amounts and timestamps
+    """
+    dune = init_dune_client()
+
+    if dune is None:
+        st.info("Using mock data. Set DUNE_API_KEY environment variable for real data.")
+        return generate_mock_flow_data()
+
+    try:
+        # Example query ID - replace with actual Dune query
+        # This query should return: date, token, from_type, to_type, amount
+        query_id = 3401234  # Placeholder - create your own Dune query
+
+        query = QueryBase(query_id=query_id)
+        results = dune.run_query(query)
+
+        df = pd.DataFrame(results.result.rows)
+        df['date'] = pd.to_datetime(df['date']).dt.date
+
+        return df
+    except Exception as e:
+        st.warning(f"Could not fetch Dune data: {e}. Using mock data.")
+        return generate_mock_flow_data()
+
+def generate_mock_flow_data():
+    """Generate mock stablecoin flow data for testing"""
+    dates = pd.date_range(end=datetime.now().date(), periods=30, freq='D')
+
+    flows = []
+    for date in dates:
+        # CEX to DeFi flows
+        flows.append({
+            'date': date.date(),
+            'token': 'USDC',
+            'from_type': 'CEX',
+            'to_type': 'DeFi',
+            'from_name': np.random.choice(['Binance', 'Coinbase', 'Kraken']),
+            'to_name': np.random.choice(['Aave', 'Compound', 'Uniswap', 'Curve']),
+            'amount': np.random.uniform(50000000, 500000000)
+        })
+        flows.append({
+            'date': date.date(),
+            'token': 'USDT',
+            'from_type': 'CEX',
+            'to_type': 'DeFi',
+            'from_name': np.random.choice(['Binance', 'Coinbase', 'Kraken']),
+            'to_name': np.random.choice(['Aave', 'Compound', 'Uniswap', 'Curve']),
+            'amount': np.random.uniform(30000000, 400000000)
+        })
+
+        # DeFi to CEX flows
+        flows.append({
+            'date': date.date(),
+            'token': 'USDC',
+            'from_type': 'DeFi',
+            'to_type': 'CEX',
+            'from_name': np.random.choice(['Aave', 'Compound', 'Uniswap', 'Curve']),
+            'to_name': np.random.choice(['Binance', 'Coinbase', 'Kraken']),
+            'amount': np.random.uniform(40000000, 450000000)
+        })
+        flows.append({
+            'date': date.date(),
+            'token': 'USDT',
+            'from_type': 'DeFi',
+            'to_type': 'CEX',
+            'from_name': np.random.choice(['Aave', 'Compound', 'Uniswap', 'Curve']),
+            'to_name': np.random.choice(['Binance', 'Coinbase', 'Kraken']),
+            'amount': np.random.uniform(25000000, 380000000)
+        })
+
+        # Add some large transfers for Top Movers
+        if np.random.random() > 0.7:
+            flows.append({
+                'date': date.date(),
+                'token': np.random.choice(['USDC', 'USDT']),
+                'from_type': 'CEX',
+                'to_type': 'DeFi',
+                'from_name': np.random.choice(['Binance', 'Coinbase']),
+                'to_name': np.random.choice(['Aave', 'Compound']),
+                'amount': np.random.uniform(10000000, 100000000)
+            })
+
+    return pd.DataFrame(flows)
+
+def calculate_net_flows(df):
+    """Calculate net flows (CEX -> DeFi minus DeFi -> CEX)"""
+    # Aggregate by date and token
+    daily_flows = df.groupby(['date', 'token', 'from_type', 'to_type'])['amount'].sum().reset_index()
+
+    # Separate CEX to DeFi and DeFi to CEX
+    cex_to_defi = daily_flows[
+        (daily_flows['from_type'] == 'CEX') & (daily_flows['to_type'] == 'DeFi')
+    ].groupby(['date', 'token'])['amount'].sum().reset_index()
+    cex_to_defi.columns = ['date', 'token', 'cex_to_defi']
+
+    defi_to_cex = daily_flows[
+        (daily_flows['from_type'] == 'DeFi') & (daily_flows['to_type'] == 'CEX')
+    ].groupby(['date', 'token'])['amount'].sum().reset_index()
+    defi_to_cex.columns = ['date', 'token', 'defi_to_cex']
+
+    # Merge and calculate net flow
+    net_flows = pd.merge(cex_to_defi, defi_to_cex, on=['date', 'token'], how='outer').fillna(0)
+    net_flows['net_flow'] = net_flows['cex_to_defi'] - net_flows['defi_to_cex']
+
+    return net_flows
+
+def generate_insights(flow_df, eth_df, correlation_coef):
+    """Generate 2-3 sentence insight summary"""
+    # Calculate total net flow
+    net_flows = calculate_net_flows(flow_df)
+    total_net_flow = net_flows['net_flow'].sum() / 1e9  # Convert to billions
+
+    # Calculate recent trend
+    recent_7d = net_flows[net_flows['date'] >= (datetime.now().date() - timedelta(days=7))]
+    recent_flow = recent_7d['net_flow'].sum() / 1e9
+
+    # ETH price trend
+    eth_change = ((eth_df.iloc[-1]['price'] - eth_df.iloc[0]['price']) / eth_df.iloc[0]['price']) * 100
+
+    direction = "into" if total_net_flow > 0 else "out of"
+    trend = "accelerating" if recent_flow > total_net_flow / 4 else "moderating"
+    correlation_strength = "strong" if abs(correlation_coef) > 0.5 else "weak"
+
+    insight = f"""
+    **Key Insights:** Over the past 30 days, institutional stablecoin flows show a net movement of
+    ${abs(total_net_flow):.2f}B {direction} DeFi protocols, with activity {trend} in the last week.
+    The correlation between stablecoin inflows and ETH price changes is {correlation_strength} (r={correlation_coef:.2f}),
+    while ETH has {'gained' if eth_change > 0 else 'declined'} {abs(eth_change):.1f}% during this period.
+    """
+
+    return insight
+
+# Main dashboard
+def main():
+    st.title("💱 Institutional Stablecoin Flow Analysis")
+
+    # Fetch data
+    with st.spinner("Loading data..."):
+        flow_df = fetch_stablecoin_flows()
+        eth_df = fetch_eth_prices(days=32)  # Extra days for lag analysis
+
+    # Calculate metrics
+    net_flows = calculate_net_flows(flow_df)
+
+    # Calculate correlation with 48hr lag
+    eth_changes = eth_df.copy()
+    eth_changes['price_change_48h'] = eth_changes['price'].pct_change(2) * 100
+
+    daily_net = net_flows.groupby('date')['net_flow'].sum().reset_index()
+    correlation_df = pd.merge(daily_net, eth_changes, on='date', how='inner')
+
+    if len(correlation_df) > 0:
+        correlation_coef = correlation_df['net_flow'].corr(correlation_df['price_change_48h'])
+    else:
+        correlation_coef = 0
+
+    # Display insights
+    st.markdown(generate_insights(flow_df, eth_df, correlation_coef))
+    st.divider()
+
+    # 1. Flow Volume Chart
+    st.subheader("📊 Daily Net Flows: CEX ↔ DeFi (30 Days)")
+
+    flow_chart_data = net_flows.pivot(index='date', columns='token', values='net_flow').fillna(0)
+
+    fig_flows = go.Figure()
+
+    for token in ['USDC', 'USDT']:
+        if token in flow_chart_data.columns:
+            fig_flows.add_trace(go.Scatter(
+                x=flow_chart_data.index,
+                y=flow_chart_data[token] / 1e6,  # Convert to millions
+                name=token,
+                mode='lines',
+                stackgroup='one',
+                line=dict(width=0.5),
+                fillcolor='rgba(0, 176, 240, 0.5)' if token == 'USDC' else 'rgba(80, 200, 120, 0.5)'
+            ))
+
+    fig_flows.update_layout(
+        xaxis_title="Date",
+        yaxis_title="Net Flow (Million USD)",
+        hovermode='x unified',
+        height=400,
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+    )
+
+    st.plotly_chart(fig_flows, use_container_width=True)
+
+    # 2. Top Movers Table
+    st.subheader("🔝 Top Movers: Largest Transfers (Last 7 Days)")
+
+    seven_days_ago = datetime.now().date() - timedelta(days=7)
+    large_transfers = flow_df[
+        (flow_df['date'] >= seven_days_ago) &
+        (flow_df['amount'] >= 10000000)
+    ].sort_values('amount', ascending=False).head(10)
+
+    if len(large_transfers) > 0:
+        display_df = large_transfers[['date', 'amount', 'from_name', 'to_name', 'token']].copy()
+        display_df['amount'] = display_df['amount'].apply(lambda x: f"${x/1e6:.2f}M")
+        display_df.columns = ['Date', 'Amount', 'From', 'To', 'Token']
+        st.dataframe(display_df, use_container_width=True, hide_index=True)
+    else:
+        st.info("No transfers over $10M in the last 7 days.")
+
+    # 3. Correlation Analysis
+    col1, col2 = st.columns([2, 1])
+
+    with col1:
+        st.subheader("📈 Correlation: Stablecoin Inflow vs ETH Price Change")
+
+        if len(correlation_df) > 5:
+            fig_corr = px.scatter(
+                correlation_df,
+                x='net_flow',
+                y='price_change_48h',
+                trendline='ols',
+                labels={
+                    'net_flow': 'Net Stablecoin Inflow (USD)',
+                    'price_change_48h': 'ETH Price Change 48h (%)'
+                },
+                height=400
+            )
+
+            fig_corr.update_traces(marker=dict(size=10, opacity=0.6, color='#1f77b4'))
+            st.plotly_chart(fig_corr, use_container_width=True)
+        else:
+            st.info("Insufficient data for correlation analysis.")
+
+    with col2:
+        st.subheader("📊 Correlation Coefficient")
+        st.metric(
+            label="Pearson Correlation (48hr lag)",
+            value=f"{correlation_coef:.3f}",
+            delta="Strong correlation" if abs(correlation_coef) > 0.5 else "Weak correlation"
+        )
+
+        st.markdown("""
+        **Interpretation:**
+        - **> 0.5**: Strong positive correlation
+        - **0.2 to 0.5**: Moderate correlation
+        - **< 0.2**: Weak/no correlation
+        - **Negative**: Inverse relationship
+        """)
+
+    # 4. Protocol Breakdown
+    st.subheader("🏦 Total Inflows by Protocol (Last 30 Days)")
+
+    protocol_inflows = flow_df[
+        (flow_df['from_type'] == 'CEX') &
+        (flow_df['to_type'] == 'DeFi')
+    ].groupby('to_name')['amount'].sum().reset_index()
+    protocol_inflows = protocol_inflows.sort_values('amount', ascending=True)
+
+    fig_protocols = px.bar(
+        protocol_inflows,
+        x='amount',
+        y='to_name',
+        orientation='h',
+        labels={'amount': 'Total Inflow (USD)', 'to_name': 'Protocol'},
+        color='amount',
+        color_continuous_scale='Blues',
+        height=400
+    )
+
+    fig_protocols.update_layout(showlegend=False)
+    fig_protocols.update_xaxis(tickformat='$,.0f')
+
+    st.plotly_chart(fig_protocols, use_container_width=True)
+
+    # Footer
+    st.divider()
+    st.caption("Data sources: Dune Analytics (stablecoin transfers) | CoinGecko (ETH prices)")
+    st.caption("Note: Flows represent transfers between known CEX wallets and DeFi protocol contracts.")
+
+if __name__ == "__main__":
+    main()
