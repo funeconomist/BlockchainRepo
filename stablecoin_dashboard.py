@@ -266,11 +266,18 @@ def generate_insights(flow_df, eth_df, correlation_coef):
     recent_7d = net_flows[net_flows['date'] >= (datetime.now().date() - timedelta(days=7))]
     recent_flow = recent_7d['net_flow'].sum() / 1e9
 
-    # ETH price trend
-    eth_change = ((eth_df.iloc[-1]['price'] - eth_df.iloc[0]['price']) / eth_df.iloc[0]['price']) * 100
+    # ETH price trend - with safety check
+    if len(eth_df) >= 2:
+        eth_change = ((eth_df.iloc[-1]['price'] - eth_df.iloc[0]['price']) / eth_df.iloc[0]['price']) * 100
+    else:
+        eth_change = 0
 
     direction = "into" if total_net_flow > 0 else "out of"
     trend = "accelerating" if recent_flow > total_net_flow / 4 else "moderating"
+
+    # Handle NaN correlation
+    if pd.isna(correlation_coef):
+        correlation_coef = 0
     correlation_strength = "strong" if abs(correlation_coef) > 0.5 else "weak"
 
     insight = f"""
@@ -310,6 +317,9 @@ def main():
 
         if len(correlation_df) > 0:
             correlation_coef = correlation_df['net_flow'].corr(correlation_df['price_change_48h'])
+            # Handle NaN correlation
+            if pd.isna(correlation_coef):
+                correlation_coef = 0
         else:
             correlation_coef = 0
 
@@ -442,7 +452,7 @@ def main():
         )
 
         fig_protocols.update_layout(showlegend=False)
-        fig_protocols.update_xaxis(tickformat='$,.0f')
+        fig_protocols.update_xaxes(tickformat='$,.0f')
 
         st.plotly_chart(fig_protocols, use_container_width=True)
 
@@ -500,7 +510,12 @@ def main():
             if len(crypto_df) > 1:
                 current_price = crypto_df.iloc[-1]['price']
                 prev_price = crypto_df.iloc[-2]['price']
-                change = ((current_price - prev_price) / prev_price) * 100
+
+                # Calculate change with division by zero check
+                if prev_price != 0:
+                    change = ((current_price - prev_price) / prev_price) * 100
+                else:
+                    change = 0
 
                 with cols[idx]:
                     name, symbol = name_map.get(crypto_id, (crypto_id, crypto_id.upper()))
@@ -523,9 +538,15 @@ def main():
         for crypto_id in cryptos_to_show:
             crypto_df = all_crypto_data[all_crypto_data['crypto'] == crypto_id].sort_values('date')
 
+            # Skip if no data
+            if len(crypto_df) == 0:
+                continue
+
             if normalize:
                 # Normalize to starting price = 100
                 base_price = crypto_df.iloc[0]['price']
+                if base_price == 0:
+                    continue
                 y_values = (crypto_df['price'] / base_price) * 100
                 y_label = "Normalized Price (Base = 100)"
             else:
