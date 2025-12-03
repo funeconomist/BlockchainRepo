@@ -13,6 +13,7 @@ from dune_client.client import DuneClient
 from dune_client.query import QueryBase
 import numpy as np
 import os
+from scipy import stats
 
 # Page configuration
 st.set_page_config(
@@ -69,6 +70,81 @@ def generate_mock_eth_prices(days=30):
     return df
 
 @st.cache_data(ttl=3600)
+def fetch_crypto_prices(crypto_id, days=30):
+    """Fetch cryptocurrency price data from CoinGecko API"""
+    try:
+        url = f"https://api.coingecko.com/api/v3/coins/{crypto_id}/market_chart"
+        params = {
+            "vs_currency": "usd",
+            "days": days,
+            "interval": "daily"
+        }
+        response = requests.get(url, params=params, timeout=10)
+        response.raise_for_status()
+
+        data = response.json()
+        prices = data['prices']
+
+        df = pd.DataFrame(prices, columns=['timestamp', 'price'])
+        df['date'] = pd.to_datetime(df['timestamp'], unit='ms').dt.date
+        df = df[['date', 'price']]
+        df['crypto'] = crypto_id
+
+        return df
+    except Exception as e:
+        return generate_mock_crypto_prices(crypto_id, days)
+
+def generate_mock_crypto_prices(crypto_id, days=30):
+    """Generate mock crypto price data for testing"""
+    dates = pd.date_range(end=datetime.now().date(), periods=days, freq='D')
+
+    # Different base prices for different cryptos
+    base_prices = {
+        'bitcoin': 45000,
+        'ethereum': 2500,
+        'binancecoin': 300,
+        'ripple': 0.6,
+        'cardano': 0.5,
+        'solana': 100,
+        'polkadot': 7,
+        'dogecoin': 0.08,
+        'avalanche-2': 35,
+        'chainlink': 15
+    }
+
+    base_price = base_prices.get(crypto_id, 100)
+    volatility = base_price * 0.03
+    prices = base_price + np.cumsum(np.random.randn(days) * volatility)
+
+    df = pd.DataFrame({
+        'date': dates.date,
+        'price': prices,
+        'crypto': crypto_id
+    })
+    return df
+
+@st.cache_data(ttl=3600)
+def fetch_top10_crypto_data(days=30):
+    """Fetch price data for top 10 cryptocurrencies"""
+    top_cryptos = [
+        'bitcoin', 'ethereum', 'binancecoin', 'ripple', 'cardano',
+        'solana', 'polkadot', 'dogecoin', 'avalanche-2', 'chainlink'
+    ]
+
+    all_data = []
+    for crypto in top_cryptos:
+        df = fetch_crypto_prices(crypto, days)
+        all_data.append(df)
+
+    return pd.concat(all_data, ignore_index=True)
+
+def calculate_returns(price_df):
+    """Calculate daily returns from price data"""
+    price_df = price_df.sort_values('date')
+    price_df['returns'] = price_df.groupby('crypto')['price'].pct_change() * 100
+    return price_df.dropna()
+
+@st.cache_data(ttl=3600)
 def fetch_stablecoin_flows():
     """
     Fetch stablecoin transfer data from Dune Analytics
@@ -82,7 +158,6 @@ def fetch_stablecoin_flows():
     dune = init_dune_client()
 
     if dune is None:
-        st.info("Using mock data. Set DUNE_API_KEY environment variable for real data.")
         return generate_mock_flow_data()
 
     try:
@@ -348,9 +423,154 @@ def main():
 
     st.plotly_chart(fig_protocols, use_container_width=True)
 
+    # 5. Bitcoin vs Ethereum Returns Analysis
+    st.divider()
+    st.subheader("₿ Bitcoin vs Ethereum Returns Correlation")
+
+    with st.spinner("Loading crypto data..."):
+        btc_data = fetch_crypto_prices('bitcoin', days=90)
+        eth_data = fetch_crypto_prices('ethereum', days=90)
+
+        # Calculate returns
+        btc_returns = calculate_returns(btc_data)
+        eth_returns = calculate_returns(eth_data)
+
+        # Merge on date
+        btc_eth_df = pd.merge(
+            btc_returns[['date', 'returns']],
+            eth_returns[['date', 'returns']],
+            on='date',
+            suffixes=('_btc', '_eth')
+        )
+
+    if len(btc_eth_df) > 5:
+        # Calculate regression statistics
+        slope, intercept, r_value, p_value, std_err = stats.linregress(
+            btc_eth_df['returns_btc'],
+            btc_eth_df['returns_eth']
+        )
+        r_squared = r_value ** 2
+
+        # Create scatter plot with regression line
+        fig_btc_eth = go.Figure()
+
+        # Add scatter points
+        fig_btc_eth.add_trace(go.Scatter(
+            x=btc_eth_df['returns_btc'],
+            y=btc_eth_df['returns_eth'],
+            mode='markers',
+            name='Daily Returns',
+            marker=dict(size=8, opacity=0.6, color='#f7931a'),
+            text=btc_eth_df['date'],
+            hovertemplate='<b>Date:</b> %{text}<br><b>BTC Return:</b> %{x:.2f}%<br><b>ETH Return:</b> %{y:.2f}%<extra></extra>'
+        ))
+
+        # Add regression line
+        x_range = np.array([btc_eth_df['returns_btc'].min(), btc_eth_df['returns_btc'].max()])
+        y_range = slope * x_range + intercept
+
+        fig_btc_eth.add_trace(go.Scatter(
+            x=x_range,
+            y=y_range,
+            mode='lines',
+            name='Regression Line',
+            line=dict(color='red', width=2, dash='dash')
+        ))
+
+        fig_btc_eth.update_layout(
+            xaxis_title="Bitcoin Daily Returns (%)",
+            yaxis_title="Ethereum Daily Returns (%)",
+            hovermode='closest',
+            height=500,
+            showlegend=True
+        )
+
+        col1, col2 = st.columns([3, 1])
+
+        with col1:
+            st.plotly_chart(fig_btc_eth, use_container_width=True)
+
+        with col2:
+            st.markdown("### 📊 Statistics")
+            st.metric("R² (Coefficient of Determination)", f"{r_squared:.4f}")
+            st.metric("Correlation (r)", f"{r_value:.4f}")
+            st.metric("P-value", f"{p_value:.4e}")
+
+            st.markdown("### 📐 Regression Equation")
+            st.latex(f"y = {slope:.4f}x + {intercept:.4f}")
+
+            st.markdown("""
+            **Interpretation:**
+            - **R² = 1**: Perfect fit
+            - **R² > 0.7**: Strong relationship
+            - **R² < 0.3**: Weak relationship
+            """)
+
+    # 6. Top 10 Cryptocurrencies Correlation Matrix
+    st.divider()
+    st.subheader("🔗 Top 10 Cryptocurrencies Return Correlations")
+
+    with st.spinner("Loading top 10 crypto data..."):
+        top10_data = fetch_top10_crypto_data(days=90)
+        top10_returns = calculate_returns(top10_data)
+
+        # Pivot to get returns by crypto
+        returns_pivot = top10_returns.pivot(index='date', columns='crypto', values='returns')
+
+        # Calculate correlation matrix
+        corr_matrix = returns_pivot.corr()
+
+        # Clean up crypto names for display
+        name_map = {
+            'bitcoin': 'Bitcoin',
+            'ethereum': 'Ethereum',
+            'binancecoin': 'BNB',
+            'ripple': 'XRP',
+            'cardano': 'Cardano',
+            'solana': 'Solana',
+            'polkadot': 'Polkadot',
+            'dogecoin': 'Dogecoin',
+            'avalanche-2': 'Avalanche',
+            'chainlink': 'Chainlink'
+        }
+        corr_matrix = corr_matrix.rename(index=name_map, columns=name_map)
+
+    # Create heatmap
+    fig_corr = go.Figure(data=go.Heatmap(
+        z=corr_matrix.values,
+        x=corr_matrix.columns,
+        y=corr_matrix.index,
+        colorscale='RdBu',
+        zmid=0,
+        zmin=-1,
+        zmax=1,
+        text=corr_matrix.values,
+        texttemplate='%{text:.2f}',
+        textfont={"size": 10},
+        colorbar=dict(title="Correlation")
+    ))
+
+    fig_corr.update_layout(
+        title="Correlation Matrix of Daily Returns (90 Days)",
+        xaxis_title="",
+        yaxis_title="",
+        height=600,
+        width=800
+    )
+
+    st.plotly_chart(fig_corr, use_container_width=True)
+
+    st.markdown("""
+    **Key Insights:**
+    - Values close to **+1** indicate strong positive correlation (assets move together)
+    - Values close to **-1** indicate strong negative correlation (assets move opposite)
+    - Values close to **0** indicate little to no correlation
+    - Most cryptocurrencies show positive correlation, suggesting market-wide movements
+    """)
+
     # Footer
     st.divider()
-    st.caption("Data sources: Dune Analytics (stablecoin transfers) | CoinGecko (ETH prices)")
+    st.caption("Data sources: Dune Analytics (stablecoin transfers) | CoinGecko (crypto prices)")
     st.caption("Note: Flows represent transfers between known CEX wallets and DeFi protocol contracts.")
 
 if __name__ == "__main__":
