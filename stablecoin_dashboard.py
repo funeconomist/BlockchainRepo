@@ -442,7 +442,7 @@ def main():
         )
 
         fig_protocols.update_layout(showlegend=False)
-        fig_protocols.update_xaxis(tickformat='$,.0f')
+        fig_protocols.update_xaxes(tickformat='$,.0f')
 
         st.plotly_chart(fig_protocols, use_container_width=True)
 
