@@ -52,6 +52,9 @@ def fetch_eth_prices(days=30):
         df['date'] = pd.to_datetime(df['timestamp'], unit='ms').dt.date
         df = df[['date', 'price']]
 
+        # Remove duplicates by keeping the last entry for each date
+        df = df.drop_duplicates(subset=['date'], keep='last')
+
         return df
     except Exception as e:
         return generate_mock_eth_prices(days)
@@ -88,6 +91,9 @@ def fetch_crypto_prices(crypto_id, days=30):
         df['date'] = pd.to_datetime(df['timestamp'], unit='ms').dt.date
         df = df[['date', 'price']]
         df['crypto'] = crypto_id
+
+        # Remove duplicates by keeping the last entry for each date
+        df = df.drop_duplicates(subset=['date', 'crypto'], keep='last')
 
         return df
     except Exception as e:
@@ -135,10 +141,17 @@ def fetch_top10_crypto_data(days=30):
         df = fetch_crypto_prices(crypto, days)
         all_data.append(df)
 
-    return pd.concat(all_data, ignore_index=True)
+    combined = pd.concat(all_data, ignore_index=True)
+
+    # Ensure no duplicates in combined data
+    combined = combined.drop_duplicates(subset=['date', 'crypto'], keep='last')
+
+    return combined
 
 def calculate_returns(price_df):
     """Calculate daily returns from price data"""
+    # Ensure no duplicates before calculating returns
+    price_df = price_df.drop_duplicates(subset=['date', 'crypto'], keep='last')
     price_df = price_df.sort_values('date')
     price_df['returns'] = price_df.groupby('crypto')['price'].pct_change() * 100
     return price_df.dropna()
@@ -348,7 +361,13 @@ def main():
         # 1. Flow Volume Chart
         st.subheader("📊 Daily Net Flows: CEX ↔ DeFi (30 Days)")
 
-        flow_chart_data = net_flows.pivot(index='date', columns='token', values='net_flow').fillna(0)
+        # Use pivot_table to handle any duplicate entries by aggregating them
+        flow_chart_data = net_flows.pivot_table(
+            index='date',
+            columns='token',
+            values='net_flow',
+            aggfunc='sum'  # Sum any duplicate entries for the same date/token
+        ).fillna(0)
 
         fig_flows = go.Figure()
 
@@ -665,8 +684,14 @@ def main():
             top10_data = fetch_top10_crypto_data(days=90)
             top10_returns = calculate_returns(top10_data)
 
-            # Pivot to get returns by crypto
-            returns_pivot = top10_returns.pivot(index='date', columns='crypto', values='returns')
+            # Pivot to get returns by crypto - use pivot_table to handle any remaining duplicates
+            # pivot_table will aggregate duplicates by taking the mean
+            returns_pivot = top10_returns.pivot_table(
+                index='date',
+                columns='crypto',
+                values='returns',
+                aggfunc='mean'  # Average any duplicate entries
+            )
 
             # Calculate correlation matrix
             corr_matrix = returns_pivot.corr()
