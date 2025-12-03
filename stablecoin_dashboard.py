@@ -52,6 +52,9 @@ def fetch_eth_prices(days=30):
         df['date'] = pd.to_datetime(df['timestamp'], unit='ms').dt.date
         df = df[['date', 'price']]
 
+        # Remove duplicates by keeping the last entry for each date
+        df = df.drop_duplicates(subset=['date'], keep='last')
+
         return df
     except Exception as e:
         return generate_mock_eth_prices(days)
@@ -88,6 +91,9 @@ def fetch_crypto_prices(crypto_id, days=30):
         df['date'] = pd.to_datetime(df['timestamp'], unit='ms').dt.date
         df = df[['date', 'price']]
         df['crypto'] = crypto_id
+
+        # Remove duplicates by keeping the last entry for each date
+        df = df.drop_duplicates(subset=['date', 'crypto'], keep='last')
 
         return df
     except Exception as e:
@@ -348,7 +354,9 @@ def main():
         # 1. Flow Volume Chart
         st.subheader("📊 Daily Net Flows: CEX ↔ DeFi (30 Days)")
 
-        flow_chart_data = net_flows.pivot(index='date', columns='token', values='net_flow').fillna(0)
+        # Remove duplicates before pivoting to avoid reshape errors
+        net_flows_clean = net_flows.drop_duplicates(subset=['date', 'token'], keep='last')
+        flow_chart_data = net_flows_clean.pivot(index='date', columns='token', values='net_flow').fillna(0)
 
         fig_flows = go.Figure()
 
@@ -665,8 +673,10 @@ def main():
             top10_data = fetch_top10_crypto_data(days=90)
             top10_returns = calculate_returns(top10_data)
 
-            # Pivot to get returns by crypto
-            returns_pivot = top10_returns.pivot(index='date', columns='crypto', values='returns')
+            # Remove duplicates and pivot to get returns by crypto
+            # Use drop_duplicates to handle any duplicate (date, crypto) combinations
+            top10_returns_clean = top10_returns.drop_duplicates(subset=['date', 'crypto'], keep='last')
+            returns_pivot = top10_returns_clean.pivot(index='date', columns='crypto', values='returns')
 
             # Calculate correlation matrix
             corr_matrix = returns_pivot.corr()
